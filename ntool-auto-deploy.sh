@@ -44,16 +44,23 @@ echo
 log "Step 1: Detecting ntool source files..."
 
 NTOOL_SOURCE=""
-if [ -d "ntool" ] && [ -f "ntool/composer.json" ] && [ -d "ntool/app" ] && [ -f "ntool/artisan" ]; then
-    NTOOL_SOURCE="ntool"
-    info "✓ Found ntool directory with Laravel application"
-elif [ -f "composer.json" ] && [ -d "app" ] && [ -f "artisan" ]; then
+
+# Check current directory first (most common case)
+if [ -f "composer.json" ] && [ -d "app" ] && [ -f "artisan" ]; then
     NTOOL_SOURCE="."
     info "✓ Found Laravel application in current directory"
+# Check ntool subdirectory
+elif [ -d "ntool" ] && [ -f "ntool/composer.json" ] && [ -d "ntool/app" ] && [ -f "ntool/artisan" ]; then
+    NTOOL_SOURCE="ntool"
+    info "✓ Found ntool directory with Laravel application"
 else
-    error "NTool Laravel application not found. Expected structure:"
-    error "  - ntool/composer.json, ntool/app/, ntool/artisan"
-    error "  OR composer.json, app/, artisan in current directory"
+    # Show current directory contents for debugging
+    info "Current directory contents:"
+    ls -la | head -10
+
+    error "NTool Laravel application not found. Please ensure you're in the correct directory."
+    error "Required files: composer.json, app/, artisan"
+    error "Current location: $(pwd)"
 fi
 
 # Change to source directory
