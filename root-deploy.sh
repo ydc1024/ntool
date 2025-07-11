@@ -60,50 +60,227 @@ WEB_USER=$(detect_web_user)
 # Root user privilege management
 check_root_privileges() {
     log "Checking root privileges..."
-    
+
     if [[ $EUID -ne 0 ]]; then
         error "This script must be run as root. Use: sudo ./root-deploy.sh"
     fi
-    
+
     info "✓ Running as root user"
     info "✓ Web user detected: $WEB_USER"
-    
+
     # Verify web user exists
     if ! id "$WEB_USER" &>/dev/null; then
         error "Web user '$WEB_USER' does not exist. Please create it first."
     fi
-    
+
     info "✓ Web user '$WEB_USER' exists"
 }
 
-# Function to find package file
+# Pre-deployment environment check
+check_deployment_environment() {
+    log "Checking deployment environment..."
+
+    # Check current directory contents
+    info "Current directory: $(pwd)"
+    info "Directory contents:"
+    ls -la | head -10
+
+    # Check for source files
+    local has_source_files=false
+    if [ -f "composer.json" ] && [ -d "app" ] && [ -f "artisan" ]; then
+        has_source_files=true
+        info "✓ Laravel source files detected"
+    fi
+
+    # Check for package files
+    local package_count=$(ls -1 ntool-*.tar.gz 2>/dev/null | wc -l)
+    info "Package files found: $package_count"
+
+    # Check for packaging script
+    if [ -f "package-ntool.sh" ]; then
+        info "✓ Packaging script available"
+    else
+        warning "Packaging script not found"
+    fi
+
+    # Check essential commands
+    local missing_commands=()
+    for cmd in tar gzip find php mysql composer npm; do
+        if ! command -v $cmd &> /dev/null; then
+            missing_commands+=("$cmd")
+        fi
+    done
+
+    if [ ${#missing_commands[@]} -gt 0 ]; then
+        warning "Missing commands: ${missing_commands[*]}"
+        warning "Some deployment features may not work properly"
+    else
+        info "✓ All essential commands available"
+    fi
+
+    # Check PHP version
+    if command -v php &> /dev/null; then
+        local php_version=$(php -r "echo PHP_VERSION;" 2>/dev/null)
+        info "PHP version: $php_version"
+
+        # Check PHP extensions
+        local required_extensions=("pdo" "mysql" "mbstring" "xml" "curl" "zip")
+        local missing_extensions=()
+
+        for ext in "${required_extensions[@]}"; do
+            if ! php -m | grep -q "^$ext$"; then
+                missing_extensions+=("$ext")
+            fi
+        done
+
+        if [ ${#missing_extensions[@]} -gt 0 ]; then
+            warning "Missing PHP extensions: ${missing_extensions[*]}"
+        else
+            info "✓ Required PHP extensions available"
+        fi
+    fi
+
+    # Summary
+    if [ $package_count -eq 0 ] && [ "$has_source_files" = false ]; then
+        error "No deployment source found. Need either package files or source files."
+    fi
+
+    log "Environment check completed"
+}
+
+# Function to find or create package file
 find_package_file() {
     log "Looking for NTool package file..."
-    
+
     # Look for package files in current directory
     local package_files=($(ls -1 ntool-*.tar.gz 2>/dev/null | sort -r))
-    
+
     if [ ${#package_files[@]} -eq 0 ]; then
-        error "No NTool package file found. Please ensure ntool-*.tar.gz exists in current directory."
+        warning "No pre-built package found. Checking for source files..."
+
+        # Check if we have source files to package
+        if [ -f "composer.json" ] && [ -d "app" ] && [ -f "artisan" ]; then
+            info "Found Laravel source files in current directory"
+
+            # Check if package-ntool.sh exists
+            if [ -f "package-ntool.sh" ]; then
+                log "Creating package from source files..."
+                chmod +x package-ntool.sh
+
+                # Run packaging script
+                if ./package-ntool.sh; then
+                    # Look for the newly created package
+                    package_files=($(ls -1 ntool-*.tar.gz 2>/dev/null | sort -r))
+
+                    if [ ${#package_files[@]} -eq 0 ]; then
+                        error "Package creation failed. No package file generated."
+                    fi
+
+                    info "Package created successfully"
+                else
+                    error "Package creation failed. Check package-ntool.sh script."
+                fi
+            else
+                # Create package manually if package-ntool.sh doesn't exist
+                log "Creating package manually from current directory..."
+                create_manual_package
+            fi
+        else
+            error "No package file or source files found. Please ensure either:"
+            error "1. ntool-*.tar.gz package file exists, OR"
+            error "2. Laravel source files (composer.json, app/, artisan) exist in current directory"
+        fi
     fi
-    
+
+    # Now we should have package files
     if [ ${#package_files[@]} -eq 1 ]; then
         PACKAGE_FILE="${package_files[0]}"
-        info "Found package: $PACKAGE_FILE"
-    else
+        info "Using package: $PACKAGE_FILE"
+    elif [ ${#package_files[@]} -gt 1 ]; then
         echo "Multiple package files found:"
         for i in "${!package_files[@]}"; do
             echo "$((i+1)). ${package_files[$i]}"
         done
-        
+
         read -p "Select package to deploy (1-${#package_files[@]}): " selection
-        
+
         if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#package_files[@]}" ]; then
             error "Invalid selection"
         fi
-        
+
         PACKAGE_FILE="${package_files[$((selection-1))]}"
         info "Selected package: $PACKAGE_FILE"
+    else
+        error "No package file available after creation attempt"
+    fi
+}
+
+# Function to create package manually
+create_manual_package() {
+    log "Creating package manually from source files..."
+
+    local timestamp=$(date +"%Y%m%d_%H%M%S")
+    local package_name="ntool-${timestamp}.tar.gz"
+    local temp_dir="ntool-package-${timestamp}"
+
+    # Create temporary package directory
+    mkdir -p "$temp_dir"
+
+    # Copy essential Laravel files and directories
+    local essential_items=(
+        "app" "bootstrap" "config" "database" "public" "resources"
+        "routes" "storage" "tests" "composer.json" "package.json"
+        "artisan" ".env.example" "README.md"
+    )
+
+    info "Copying source files to package..."
+    for item in "${essential_items[@]}"; do
+        if [ -e "$item" ]; then
+            cp -r "$item" "$temp_dir/"
+            info "✓ Copied $item"
+        fi
+    done
+
+    # Create missing essential directories
+    mkdir -p "$temp_dir/storage/app/public"
+    mkdir -p "$temp_dir/storage/framework/cache/data"
+    mkdir -p "$temp_dir/storage/framework/sessions"
+    mkdir -p "$temp_dir/storage/framework/views"
+    mkdir -p "$temp_dir/storage/logs"
+    mkdir -p "$temp_dir/bootstrap/cache"
+
+    # Create .gitignore files for empty directories
+    echo "*" > "$temp_dir/storage/app/public/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/storage/app/public/.gitignore"
+    echo "*" > "$temp_dir/storage/framework/cache/data/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/storage/framework/cache/data/.gitignore"
+    echo "*" > "$temp_dir/storage/framework/sessions/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/storage/framework/sessions/.gitignore"
+    echo "*" > "$temp_dir/storage/framework/views/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/storage/framework/views/.gitignore"
+    echo "*" > "$temp_dir/storage/logs/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/storage/logs/.gitignore"
+    echo "*" > "$temp_dir/bootstrap/cache/.gitignore"
+    echo "!.gitignore" >> "$temp_dir/bootstrap/cache/.gitignore"
+
+    # Set proper permissions
+    find "$temp_dir" -type f -exec chmod 644 {} \;
+    find "$temp_dir" -type d -exec chmod 755 {} \;
+    chmod +x "$temp_dir/artisan" 2>/dev/null || true
+
+    # Create the package
+    info "Creating package archive..."
+    tar -czf "$package_name" "$temp_dir"
+
+    # Cleanup
+    rm -rf "$temp_dir"
+
+    if [ -f "$package_name" ]; then
+        local package_size=$(du -h "$package_name" | cut -f1)
+        info "✓ Package created: $package_name ($package_size)"
+        PACKAGE_FILE="$package_name"
+    else
+        error "Failed to create package file"
     fi
 }
 
@@ -207,31 +384,75 @@ perform_complete_cleanup() {
 # Extract package function (root version)
 extract_package() {
     log "Extracting NTool package..."
-    
+
     # Create temporary extraction directory
     mkdir -p "$TEMP_EXTRACT_DIR"
-    
+
     # Extract package
     info "Extracting $PACKAGE_FILE..."
     tar -xzf "$PACKAGE_FILE" -C "$TEMP_EXTRACT_DIR"
-    
-    # Find the extracted directory
-    local extracted_dir=$(find "$TEMP_EXTRACT_DIR" -maxdepth 1 -type d -name "ntool-*" | head -1)
-    
+
+    # Find the extracted directory - try multiple patterns
+    local extracted_dir=""
+
+    # First try to find ntool-* directory
+    extracted_dir=$(find "$TEMP_EXTRACT_DIR" -maxdepth 1 -type d -name "ntool-*" | head -1)
+
+    # If not found, check if files were extracted directly
     if [ -z "$extracted_dir" ]; then
-        error "Could not find extracted ntool directory"
+        # Check if Laravel files exist directly in temp directory
+        if [ -f "$TEMP_EXTRACT_DIR/artisan" ] && [ -f "$TEMP_EXTRACT_DIR/composer.json" ]; then
+            extracted_dir="$TEMP_EXTRACT_DIR"
+            info "Package extracted directly to temp directory"
+        else
+            # Look for any subdirectory that contains Laravel files
+            for dir in "$TEMP_EXTRACT_DIR"/*; do
+                if [ -d "$dir" ] && [ -f "$dir/artisan" ] && [ -f "$dir/composer.json" ]; then
+                    extracted_dir="$dir"
+                    break
+                fi
+            done
+        fi
     fi
-    
+
+    if [ -z "$extracted_dir" ]; then
+        error "Could not find Laravel application in extracted package. Expected files: artisan, composer.json"
+    fi
+
     info "Package extracted to: $extracted_dir"
-    
+
+    # Verify essential Laravel files exist
+    local essential_files=("artisan" "composer.json" "app" "public" "config")
+    for file in "${essential_files[@]}"; do
+        if [ ! -e "$extracted_dir/$file" ]; then
+            warning "Essential file/directory missing: $file"
+        fi
+    done
+
     # Copy all files to web root (root version - no sudo needed)
     log "Copying files to web root..."
-    cp -r "$extracted_dir"/* "$WEB_ROOT/"
-    cp -r "$extracted_dir"/.[^.]* "$WEB_ROOT/" 2>/dev/null || true
-    
+
+    if [ "$extracted_dir" = "$TEMP_EXTRACT_DIR" ]; then
+        # Files are directly in temp directory
+        cp -r "$TEMP_EXTRACT_DIR"/* "$WEB_ROOT/" 2>/dev/null || true
+        cp -r "$TEMP_EXTRACT_DIR"/.[^.]* "$WEB_ROOT/" 2>/dev/null || true
+    else
+        # Files are in a subdirectory
+        cp -r "$extracted_dir"/* "$WEB_ROOT/" 2>/dev/null || true
+        cp -r "$extracted_dir"/.[^.]* "$WEB_ROOT/" 2>/dev/null || true
+    fi
+
+    # Verify files were copied
+    local copied_files=$(find "$WEB_ROOT" -type f 2>/dev/null | wc -l)
+    if [ $copied_files -eq 0 ]; then
+        error "No files were copied to web root. Check package structure."
+    fi
+
+    info "Copied $copied_files files to web root"
+
     # Cleanup temp directory
     rm -rf "$TEMP_EXTRACT_DIR"
-    
+
     log "Files copied successfully"
 }
 
@@ -399,7 +620,10 @@ main() {
     
     # Check root privileges
     check_root_privileges
-    
+
+    # Check deployment environment
+    check_deployment_environment
+
     # Display configuration
     info "Deployment Configuration:"
     info "Domain: $DOMAIN"
