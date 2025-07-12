@@ -98,18 +98,50 @@ log "Detecting and checking source files..."
 # Store original directory
 ORIGINAL_DIR=$(pwd)
 
-# Detect source location
+# Detect source location with debugging
 SOURCE_DIR=""
+
+info "Debugging source detection..."
+info "Current directory: $(pwd)"
+info "Files in current directory:"
+ls -la | head -10
+
+# Test each condition separately for debugging
+info "Testing composer.json..."
+if [ -f "composer.json" ]; then
+    info "✓ composer.json found"
+else
+    info "✗ composer.json NOT found"
+fi
+
+info "Testing app directory..."
+if [ -d "app" ]; then
+    info "✓ app directory found"
+else
+    info "✗ app directory NOT found"
+fi
+
+info "Testing artisan file..."
+if [ -f "artisan" ]; then
+    info "✓ artisan found"
+else
+    info "✗ artisan NOT found"
+fi
+
+# Now test combined condition
 if [ -f "composer.json" ] && [ -d "app" ] && [ -f "artisan" ]; then
     SOURCE_DIR="$ORIGINAL_DIR"
-    info "✓ Laravel source files found in current directory"
+    log "✓ Laravel source files found in current directory"
+    info "Source directory set to: $SOURCE_DIR"
 elif [ -d "ntool" ] && [ -f "ntool/composer.json" ] && [ -d "ntool/app" ] && [ -f "ntool/artisan" ]; then
     SOURCE_DIR="$ORIGINAL_DIR/ntool"
-    info "✓ Laravel source files found in ntool directory"
+    log "✓ Laravel source files found in ntool directory"
+    info "Source directory set to: $SOURCE_DIR"
 else
-    error "Laravel source files not found. Checked locations:"
-    error "  - Current directory (composer.json, app/, artisan)"
-    error "  - ntool/ subdirectory"
+    error "Laravel source files not found after debugging."
+    error "Please check the debug output above."
+    error "Current directory: $(pwd)"
+    error "Required files: composer.json, app/, artisan"
 fi
 
 # Verify essential Laravel files and directories
