@@ -254,22 +254,58 @@ EOF
 
 log "✓ Updated composer.json for Laravel 10"
 
-# Step 5: Reinstall Composer dependencies
-log "Step 5: Reinstalling Composer dependencies"
+# Step 5: Completely reinstall Composer dependencies
+log "Step 5: Completely reinstalling Composer dependencies"
 
-# Remove vendor directory
+# Remove vendor directory and lock file
 rm -rf vendor
+rm -f composer.lock
 
-# Clear composer cache
+# Clear composer cache globally
 sudo -u $WEB_USER composer clear-cache 2>/dev/null || true
+sudo -u $WEB_USER composer global clear-cache 2>/dev/null || true
 
-# Install dependencies
-info "Installing Composer dependencies (this may take a few minutes)..."
-if sudo -u $WEB_USER composer install --no-dev --optimize-autoloader --no-interaction; then
-    log "✓ Composer dependencies installed successfully"
+# Update Composer to latest version
+info "Updating Composer to latest version..."
+composer self-update 2>/dev/null || true
+
+# Validate composer.json
+info "Validating composer.json..."
+if sudo -u $WEB_USER composer validate; then
+    log "✓ composer.json is valid"
 else
-    error "Failed to install Composer dependencies"
+    warning "composer.json validation issues detected"
 fi
+
+# Install dependencies with verbose output
+info "Installing Composer dependencies (this may take several minutes)..."
+info "This will download and install Laravel framework and all dependencies..."
+
+if sudo -u $WEB_USER composer install --no-dev --optimize-autoloader --no-interaction --verbose; then
+    log "✓ Composer dependencies installed successfully"
+
+    # Verify critical packages are installed
+    info "Verifying critical Laravel packages..."
+    CRITICAL_PACKAGES=("illuminate/foundation" "illuminate/console" "illuminate/container" "laravel/framework")
+
+    for package in "${CRITICAL_PACKAGES[@]}"; do
+        PACKAGE_PATH="vendor/${package}"
+        if [ -d "$PACKAGE_PATH" ]; then
+            log "✓ $package installed"
+        else
+            error "✗ $package still missing after installation"
+        fi
+    done
+
+else
+    error "Failed to install Composer dependencies - check network connection and try again"
+fi
+
+# Generate optimized autoloader
+info "Generating optimized autoloader..."
+sudo -u $WEB_USER composer dump-autoload --optimize --no-dev
+
+log "✓ Composer dependencies completely reinstalled"
 
 # Step 6: Create additional required files
 log "Step 6: Creating additional required files"
@@ -454,14 +490,81 @@ sudo -u $WEB_USER php artisan route:cache 2>/dev/null || true
 
 log "✓ Caches cleared and rebuilt"
 
-# Step 10: Test Laravel functionality
-log "Step 10: Testing Laravel functionality"
+# Step 10: Comprehensive Laravel functionality testing
+log "Step 10: Comprehensive Laravel functionality testing"
 
+# Test 1: Check if autoload works
+info "Testing autoload functionality..."
+cat > /tmp/test_autoload_fix.php << 'EOF'
+<?php
+try {
+    require_once __DIR__ . '/vendor/autoload.php';
+    echo "Autoload: OK\n";
+
+    if (class_exists('Illuminate\Foundation\Application')) {
+        echo "Laravel Foundation: OK\n";
+    } else {
+        echo "Laravel Foundation: MISSING\n";
+    }
+
+    if (class_exists('Illuminate\Console\Application')) {
+        echo "Laravel Console: OK\n";
+    } else {
+        echo "Laravel Console: MISSING\n";
+    }
+
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage() . "\n";
+}
+EOF
+
+sudo -u $WEB_USER php /tmp/test_autoload_fix.php 2>&1 | sed 's/^/  /'
+rm -f /tmp/test_autoload_fix.php
+
+# Test 2: Test artisan command
+info "Testing artisan command..."
 if sudo -u $WEB_USER php artisan --version &>/dev/null; then
     LARAVEL_VERSION=$(sudo -u $WEB_USER php artisan --version 2>/dev/null)
     log "✓ Laravel is working: $LARAVEL_VERSION"
+
+    # Test additional artisan commands
+    info "Testing additional artisan commands..."
+    if sudo -u $WEB_USER php artisan list &>/dev/null; then
+        log "✓ Artisan commands list working"
+    else
+        warning "Artisan commands list has issues"
+    fi
+
 else
-    error "Laravel artisan still not working - check debug output"
+    error "Laravel artisan still not working"
+    echo "Detailed error output:"
+    sudo -u $WEB_USER php artisan --version 2>&1 | sed 's/^/  /'
+
+    # Try to diagnose the issue
+    echo
+    warning "Attempting to diagnose the issue..."
+
+    # Check if bootstrap file exists and is readable
+    if [ -f "bootstrap/app.php" ]; then
+        info "bootstrap/app.php exists"
+        if sudo -u $WEB_USER php -l bootstrap/app.php &>/dev/null; then
+            info "bootstrap/app.php syntax is OK"
+        else
+            error "bootstrap/app.php has syntax errors"
+            sudo -u $WEB_USER php -l bootstrap/app.php
+        fi
+    else
+        error "bootstrap/app.php is missing"
+    fi
+
+    # Check vendor/autoload.php
+    if [ -f "vendor/autoload.php" ]; then
+        info "vendor/autoload.php exists"
+    else
+        error "vendor/autoload.php is missing"
+    fi
+
+    echo "Please check the error output above and run the debug script for more details."
 fi
 
 # Step 11: Restart services and test
